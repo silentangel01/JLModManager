@@ -1,0 +1,22 @@
+[
+  {
+    "Id": "JL_SteelSpikes-1.4.0",
+    "Name": "JL_SteelSpikes",
+    "Branch": "JunLing 原始发布",
+    "Version": "1.4.0",
+    "Source": "本项目 dist 发布产物，2026-11-23 核对；非第三方兼容性认证",
+    "Fingerprints": {
+      "JL_Traps.dll": "9ffe58dc02e38021d16dd054061bdfdd93823bafd46ce7dc142c978ad4642123"
+    }
+  },
+  {
+    "Id": "JL_RoboticTurret-1.0.0",
+    "Name": "JL_RoboticTurret",
+    "Branch": "JunLing 原始发布",
+    "Version": "1.0.0",
+    "Source": "本项目 dist 发布产物，2026-11-23 核对；非第三方兼容性认证",
+    "Fingerprints": {
+      "JL_RoboticTurret.dll": "6cff51ea875b22c275110808bb63b3fce0003125f35de810f5ca08ae68bad862"
+    }
+  }
+]

@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+publish/
+Data/
+test-results/
+ui-smoke*/
+.vs/
+*.user
+*.suo
+*.zip
+*.log
