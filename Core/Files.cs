@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
@@ -33,7 +33,7 @@ public static class Files
     }
     public static IEnumerable<string> Walk(string root)
     {
-        NoLinks(root);
+        WorkScope.Check();NoLinks(root);
         foreach (var p in Directory.EnumerateFileSystemEntries(root).Order(StringComparer.OrdinalIgnoreCase))
         {
             SafeSegment(Path.GetFileName(p)); NoLinks(p);
@@ -41,7 +41,7 @@ public static class Files
             else yield return p;
         }
     }
-    public static string Hash(string p) { using var f = File.OpenRead(p); return Convert.ToHexString(SHA256.HashData(f)).ToLowerInvariant(); }
+    public static string Hash(string p) { using var f = File.OpenRead(p); using var hash=IncrementalHash.CreateHash(HashAlgorithmName.SHA256);var buffer=new byte[81920];int n;long done=0;while((n=f.Read(buffer))>0){WorkScope.Check();hash.AppendData(buffer,0,n);done+=n;WorkScope.Report("校验 "+Path.GetFileName(p),done,f.Length);}return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(); }
     public static Dictionary<string,string> Snapshot(string root) => Walk(root).ToDictionary(p => Path.GetRelativePath(root,p).Replace('\\','/'), Hash, StringComparer.OrdinalIgnoreCase);
     public static bool Equal(Dictionary<string,string> a, Dictionary<string,string> b) => a.Count == b.Count && a.All(x => b.Any(y => string.Equals(x.Key,y.Key,StringComparison.OrdinalIgnoreCase) && x.Value == y.Value));
     public static string ContentKey(Dictionary<string,string> hashes) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n",hashes.OrderBy(x=>x.Key,StringComparer.OrdinalIgnoreCase).Select(x=>x.Key.ToLowerInvariant()+"="+x.Value))))).ToLowerInvariant();
@@ -56,14 +56,14 @@ public static class Files
         foreach(var file in Walk(from))
         {
             var dest = Under(to,Path.GetRelativePath(from,file));
-            Directory.CreateDirectory(Path.GetDirectoryName(dest)!); File.Copy(file,dest,false);
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!); using var input=File.OpenRead(file);using var output=new FileStream(dest,FileMode.CreateNew);WorkScope.CopyStream(input,output,input.Length,"复制 "+Path.GetFileName(file));
         }
     }
     public static void DeleteOwn(string path, string root)
     {
         if (!Within(path,root)) throw new IOException("拒绝删除工作目录外的路径。");
         if (!Directory.Exists(path)) return;
-        _ = Walk(path).ToArray(); Directory.Delete(path,true);
+        using var cleanup=new WorkScope(CancellationToken.None);_ = Walk(path).ToArray(); Directory.Delete(path,true);
     }
     public static Package Describe(string dir, bool hash = true)
     {
@@ -109,9 +109,7 @@ public static class Files
             if(e.FullName.EndsWith('/') || e.FullName.EndsWith('\\')) { Directory.CreateDirectory(dest); continue; }
             Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
             using var input=e.Open(); using var output=new FileStream(dest,FileMode.CreateNew);
-            var buffer=new byte[81920]; int count; long written=0;
-            while((count=input.Read(buffer,0,buffer.Length))>0) { written+=count; if(written>e.Length) throw new InvalidDataException("解压长度不匹配。"); output.Write(buffer,0,count); }
-            if(written!=e.Length) throw new InvalidDataException("压缩包文件不完整。");
+            WorkScope.CopyStream(input,output,e.Length,"解压 "+e.Name);
         }
     }
 }

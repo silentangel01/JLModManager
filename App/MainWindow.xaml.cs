@@ -16,20 +16,23 @@ public class ModRow : INotifyPropertyChanged
     public Action? Changed {get;init;}
     public string Name => Package.Title;
     public string Version => Package.Version;
+    public Func<string>? StateProvider {get;init;}
+    public string State => StateProvider?.Invoke() ?? "";
     public string Kind => Package.HasCode ? "代码 · DLL" : "配置 / 资源";
-    public bool Enabled {get=>Choice.Enabled;set {Choice.Enabled=value;PropertyChanged?.Invoke(this,new(nameof(Enabled)));Changed?.Invoke();}}
+    public bool Enabled {get=>Choice.Enabled;set {Choice.Enabled=value;PropertyChanged?.Invoke(this,new(nameof(Enabled)));Changed?.Invoke();PropertyChanged?.Invoke(this,new(nameof(State)));}}
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 public partial class MainWindow : Window
 {
     readonly Manager manager;
     bool refreshing,working;
+    CancellationTokenSource? operationCancel;
     public MainWindow(Manager manager)
     {
         this.manager=manager; InitializeComponent();
         manager.Save(); Refresh();
         Closing+=(s,e)=>{ if(working) { e.Cancel=true; MessageBox.Show(this,"请等待当前文件操作结束。","正在处理"); } };
-        if(manager.HasPending) Status.Text="发现未完成部署。请到“恢复与备份”先恢复。";
+        if(manager.HasPending) Status.Text="部署待恢复";
     }
     void Refresh()
     {
@@ -37,26 +40,46 @@ public partial class MainWindow : Window
         try
         {
             Profiles.ItemsSource=null; Profiles.ItemsSource=manager.Settings.Profiles; Profiles.SelectedItem=manager.Current;
-            ModGrid.ItemsSource=manager.Current.Mods.Select(c=>new ModRow {Choice=c,Package=manager.Package(c.Key),Changed=()=>{manager.Save();CountLabel.Text=$"{manager.Current.Mods.Count} 个模组 · {manager.Current.Mods.Count(c=>c.Enabled)} 个启用";Status.Text="方案已保存，待应用。";}}).ToList();
-            GameLabel.Text=string.IsNullOrWhiteSpace(manager.Settings.GamePath) ? "尚未连接 · 请手动选择游戏下的 Mods 文件夹" : manager.GameMods;
+            ModGrid.ItemsSource=manager.Current.Mods.Select(c=>new ModRow {Choice=c,Package=manager.Package(c.Key),StateProvider=()=>manager.RowState(c),Changed=()=>{manager.Save();UpdateDeployment();CountLabel.Text=$"{manager.Current.Mods.Count} 个模组 · {manager.Current.Mods.Count(c=>c.Enabled)} 个启用";Status.Text="待应用";}}).ToList();
+            GameLabel.Text=string.IsNullOrWhiteSpace(manager.Settings.GamePath) ? "未选择目录" : manager.GameMods;
             VersionNote.Text=manager.Current.TargetGameVersion; ProfileNotes.Text=manager.Current.Notes;
-            CatalogGrid.ItemsSource=manager.Packages();
-            DownloadLabel.Text=string.IsNullOrEmpty(manager.Settings.DownloadPath)?"选择你的模组下载目录，原文件会保留在原处。":manager.Settings.DownloadPath;
+            var view=new System.Windows.Data.ListCollectionView(manager.Packages().Select(p=>new CatalogEntry(p,BranchLabel(p),manager.Current.Mods.Any(c=>c.Key==p.Key)?"已选择":"")).ToList());view.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription("Name"));CatalogGrid.ItemsSource=view;
+            DownloadLabel.Text=string.IsNullOrEmpty(manager.Settings.DownloadPath)?"未选择下载目录":manager.Settings.DownloadPath;
             CountLabel.Text=$"{manager.Current.Mods.Count} 个模组 · {manager.Current.Mods.Count(c=>c.Enabled)} 个启用";
-            DeployLabel.Text="当前部署："+manager.Deployment.ProfileName+"   ·   "+manager.GameBuild()+"   ·   修改待应用";
+            UpdateDeployment();
             HistoryText.Text=string.Join("\n",manager.History().Take(12).Select(t=>$"{t.Created.ToLocalTime():MM-dd HH:mm}   {t.After.ProfileName}   {Translate(t.Status)}"));
-            Versions.ItemsSource=null; DetailTitle.Text="选择一个 Mod"; DetailText.Text="拖入 ZIP 或文件夹即可导入。已有安装可在“本机安装”中接管。";
+            Versions.ItemsSource=null; DetailTitle.Text="选择一个 Mod"; DetailText.Text="";
         }
         finally { refreshing=false; }
     }
-    static string Translate(string s)=>s switch {"Prepared"=>"待恢复","Completed"=>"已完成","Restored"=>"已恢复",_=>s};
-    async Task Run(string description,Action action,string success="已完成。")
+
+    string BranchLabel(Package p) {var id=manager.Identify(p,false);return id.Status=="已确认"?id.Detail.Split(" · ")[0]:"未确认";}
+    void UpdateDeployment() { var n=manager.Plan().Count;DeployLabel.Text="已部署："+manager.Deployment.ProfileName+"  ·  "+(n==0?"无变更":$"待应用 {n} 项"); }
+    async void CheckClick(object sender,RoutedEventArgs e)
     {
-        if(working) return; working=true; Busy.Visibility=Visibility.Visible; BusyText.Text=description;
-        try { await Task.Run(action); Refresh(); Status.Text=success; }
-        catch(Exception ex) { manager.Log(ex.ToString()); Status.Text="操作未完成，原因为："+ex.Message; MessageBox.Show(this,ex.Message,"操作未完成",MessageBoxButton.OK,MessageBoxImage.Warning); }
-        finally { Busy.Visibility=Visibility.Collapsed; working=false; }
+        List<CheckItem>? rows=null;await Run("检查",()=>rows=manager.Preflight());
+        if(rows!=null)new TableDialog(rows.Count==0?"未发现问题":"检查结果",rows){Owner=this}.ShowDialog();
     }
+    void SourceClick(object sender,RoutedEventArgs e)
+    {
+        if(ModGrid.SelectedItem is not ModRow row)return;
+        var dialog=new SourceDialog(manager.SiteCatalog(),manager.Settings.SourceBindings.GetValueOrDefault(row.Package.Key)){Owner=this};
+        if(dialog.ShowDialog()==true){if(dialog.SelectedId is {} id)manager.Settings.SourceBindings[row.Package.Key]=id;else manager.Settings.SourceBindings.Remove(row.Package.Key);manager.Save();}
+    }
+    void PlanClick(object sender,RoutedEventArgs e)=>new TableDialog("方案变更",manager.Plan()){Owner=this}.ShowDialog();
+    async void DetailsClick(object sender,RoutedEventArgs e) {if(ModGrid.SelectedItem is not ModRow r)return;IdentityResult? identity=null;await Run("校验",()=>identity=manager.Identify(r.Package));if(identity!=null)MessageBox.Show(this,r.Package.Description+"\n\n"+identity+"\n作者："+r.Package.Author+"\n内部名称："+r.Package.Name,"详情");}
+    static string Translate(string s)=>s switch {"Prepared"=>"待恢复","Completed"=>"已完成","Restored"=>"已恢复",_=>s};
+    async Task Run(string description,Action action,string success="已完成",bool cancellable=false)
+    {
+        if(working)return;working=true;operationCancel=new();Busy.Visibility=Visibility.Visible;BusyText.Text=description;
+        CancelWork.Visibility=cancellable?Visibility.Visible:Visibility.Collapsed;CancelWork.IsEnabled=true;WorkBar.IsIndeterminate=true;WorkPercent.Text="";
+        var progress=new Progress<WorkProgress>(p=>{BusyText.Text=p.Stage;WorkBar.IsIndeterminate=p.Total<=0;if(p.Total>0)WorkBar.Value=100.0*p.Done/p.Total;WorkPercent.Text=p.Total>0?$"{100.0*p.Done/p.Total:0}%":"";});
+        try { await Task.Run(()=>{using var scope=new WorkScope(cancellable?operationCancel.Token:CancellationToken.None,progress);action();});Refresh();Status.Text=success; }
+        catch(OperationCanceledException){Refresh();Status.Text="已取消";}
+        catch(Exception ex){manager.Log(ex.ToString());Status.Text="操作失败";if(manager.HasPending){Tabs.SelectedIndex=3;Status.Text="部署待恢复";}MessageBox.Show(this,ex.Message,"操作失败",MessageBoxButton.OK,MessageBoxImage.Warning);}
+        finally {Busy.Visibility=Visibility.Collapsed;working=false;operationCancel.Dispose();operationCancel=null;}
+    }
+    void CancelClick(object sender,RoutedEventArgs e){operationCancel?.Cancel();CancelWork.IsEnabled=false;BusyText.Text="正在取消";}
     bool Confirm(string text,string title="确认操作") => MessageBox.Show(this,text,title,MessageBoxButton.OKCancel,MessageBoxImage.Information)==MessageBoxResult.OK;
     string? Folder(string title,string? initial=null)
     {
@@ -70,7 +93,7 @@ public partial class MainWindow : Window
         if(dialog.ShowDialog()!=true) return;
         manager.SetModsDirectory(dialog.ModsPath,dialog.UserMods); Refresh(); Tabs.SelectedIndex=1;ScanClick(sender,e);
     }
-    void ProfileChanged(object sender,SelectionChangedEventArgs e) { if(refreshing || Profiles.SelectedItem is not Profile p)return; manager.Settings.ActiveProfile=p.Id;manager.Save();Refresh();Status.Text="已选择方案，尚未部署。"; }
+    void ProfileChanged(object sender,SelectionChangedEventArgs e) { if(refreshing || Profiles.SelectedItem is not Profile p)return; manager.Settings.ActiveProfile=p.Id;manager.Save();Refresh();Status.Text="已选择方案"; }
     void NewProfileClick(object sender,RoutedEventArgs e)
     {
         var name=TextDialog.Ask(this,"新建方案","方案名称","新方案");if(name==null)return;
@@ -88,8 +111,21 @@ public partial class MainWindow : Window
         if(!Confirm("删除方案“"+manager.Current.Name+"”？仓库和当前游戏文件会保留。"))return;
         manager.Settings.Profiles.Remove(manager.Current);manager.Settings.ActiveProfile=manager.Settings.Profiles[0].Id;manager.Save();Refresh();
     }
-    async Task ImportPath(string path) => await Run("正在导入并校验…",()=>{var list=manager.Import(path);foreach(var p in list)manager.Select(p); if(manager.LastImportedManifest is { } pack) {manager.Current.TargetGameVersion=pack.TargetGameVersion;manager.Current.Notes=pack.Notes;manager.Save();}},"已加入当前方案。检查启用项后再应用。");
-    async void ImportZipClick(object sender,RoutedEventArgs e) { var d=new OpenFileDialog{Filter="ZIP 压缩包|*.zip",Title="导入 Mod 或整合包"};if(d.ShowDialog(this)==true)await ImportPath(d.FileName); }
+    async Task ImportPath(string path)
+    {
+        var before=manager.Packages().Select(p=>p.Key).ToHashSet();List<Package>? imported=null;
+        await Run("导入",()=>imported=manager.Import(path),"已收录",true);
+        if(imported==null)return;
+        var dialog=new ImportResultDialog(imported,before,manager.Settings.Profiles,manager.Current){Owner=this};
+        if(dialog.ShowDialog()==true&&dialog.Target is {} target)
+        {
+            var previous=manager.Settings.ActiveProfile;
+            try {manager.Settings.ActiveProfile=target.Id;foreach(var p in dialog.Selected)manager.Select(p);if(manager.LastImportedManifest is {} pack){target.TargetGameVersion=pack.TargetGameVersion;target.Notes=pack.Notes;}}
+            finally {manager.Settings.ActiveProfile=previous;manager.Save();}
+            Refresh();Status.Text="已加入方案";
+        }
+    }
+    async void ImportZipClick(object sender,RoutedEventArgs e) { var d=new OpenFileDialog{Filter="压缩包|*.zip;*.rar;*.7z",Title="导入 Mod 或整合包"};if(d.ShowDialog(this)==true)await ImportPath(d.FileName); }
     async void ImportFolderClick(object sender,RoutedEventArgs e) { var path=Folder("选择 Mod 或包含多个 Mod 的目录");if(path!=null)await ImportPath(path); }
     async void OnDrop(object sender,DragEventArgs e)
     {
@@ -106,36 +142,38 @@ public partial class MainWindow : Window
         refreshing=true;
         try
         {
-            string description=row.Package.Description+"\n\n身份识别："+manager.Identify(row.Package);
-            DetailTitle.Text=row.Name;DetailText.Text=description+"\n\n作者："+row.Package.Author+"\n内部名称："+row.Package.Name+"\n内容标识："+row.Package.Key[..12];Versions.DisplayMemberPath="VersionLabel";Versions.ItemsSource=manager.Packages().Where(p=>p.Name.Equals(row.Package.Name,StringComparison.OrdinalIgnoreCase)).ToList();Versions.SelectedValuePath="Key";Versions.SelectedValue=row.Package.Key;
+
+            DetailTitle.Text=row.Name;DetailText.Text=manager.Identify(row.Package,false).Status=="已确认"?"指纹已收录":"指纹未确认";Versions.DisplayMemberPath="Label";Versions.ItemsSource=manager.Packages().Where(p=>p.Name.Equals(row.Package.Name,StringComparison.OrdinalIgnoreCase)).Select(p=>new PackageOption(p,BranchLabel(p))).ToList();Versions.SelectedValuePath="Package.Key";Versions.SelectedValue=row.Package.Key;
         }
         finally {refreshing=false;}
     }
     void VersionChanged(object sender,SelectionChangedEventArgs e)
     {
-        if(refreshing || Versions.SelectedItem is not Package p || ModGrid.SelectedItem is not ModRow row || p.Key==row.Choice.Key)return;
-        manager.Select(p,row.Enabled);Refresh();Status.Text="版本已切换，待应用。使用所选包的完整文件，不合并旧配置。";
+        if(refreshing || Versions.SelectedItem is not PackageOption option || ModGrid.SelectedItem is not ModRow row || option.Package.Key==row.Choice.Key)return;
+        var p=option.Package;var old=row.Package;var changes=Manager.ComparePackages(old,p);
+        if(new TableDialog($"{old.Version} → {p.Version}",changes,true){Owner=this}.ShowDialog()!=true){refreshing=true;Versions.SelectedValue=old.Key;refreshing=false;return;}
+        manager.Select(p,row.Enabled);Refresh();Status.Text="已完成";
     }
     void OpenPackageClick(object sender,RoutedEventArgs e) {if(ModGrid.SelectedItem is ModRow r)Open(manager.Payload(r.Choice.Key));}
-    void RemoveClick(object sender,RoutedEventArgs e) {if(ModGrid.SelectedItem is not ModRow row)return;manager.Current.Mods.Remove(row.Choice);manager.Save();Refresh();Status.Text="已从方案移除，实际停用需应用方案。";}
-    async void ScanClick(object sender,RoutedEventArgs e) { List<Installed>? rows=null;await Run("正在扫描安装…",()=>rows=manager.Scan(),"扫描完成；接管前不会改变游戏文件。");if(rows!=null)InstalledGrid.ItemsSource=rows; }
+    void RemoveClick(object sender,RoutedEventArgs e) {if(ModGrid.SelectedItem is not ModRow row)return;manager.Current.Mods.Remove(row.Choice);manager.Save();Refresh();Status.Text="待停用";}
+    async void ScanClick(object sender,RoutedEventArgs e) { List<Installed>? rows=null;await Run("正在扫描安装…",()=>rows=manager.Scan(),"扫描完成");if(rows!=null)InstalledGrid.ItemsSource=rows; }
     async Task AdoptRows(List<Installed> rows)
     {
         if(rows.Count==0){MessageBox.Show(this,"请先扫描并选择可接管的 Mod。");return;}
         if(!Confirm("将 "+rows.Count+" 个现有 Mod 保存到仓库并加入当前方案。游戏文件保持原位；之后停用或更新这些 Mod 将由管理器处理。\n\n重新接管会以目前文件作为新基线，并保留一份当前版本。","接管现有安装"))return;
-        await Run("正在保存现有安装…",()=>manager.Adopt(rows),"已接管。可以在方案中管理版本与启停。");InstalledGrid.ItemsSource=manager.Scan();
+        await Run("正在保存现有安装…",()=>manager.Adopt(rows),"已接管");InstalledGrid.ItemsSource=manager.Scan();
     }
     async void AdoptClick(object sender,RoutedEventArgs e) {if(InstalledGrid.SelectedItem is Installed row)await AdoptRows([row]);}
     async void AdoptAllClick(object sender,RoutedEventArgs e) {await AdoptRows(manager.Scan().Where(r=>!r.Native&&r.Info!=null&&r.Error.Length==0).ToList());}
     void OpenInstalledClick(object sender,RoutedEventArgs e){if(InstalledGrid.SelectedItem is Installed r)Open(r.Path);}
     async Task Apply(bool launch)
     {
-        string? review=null;
-        await Run("正在检查文件与部署计划…",()=>{manager.EnsureStopped();review=string.Join("\n",manager.Review());},"检查完成。");
-        if(review==null)return;
-        if(!launch && !Confirm(review+"\n\n将保留旧文件以便回退。新增内容的停用可能影响存档；请为重要存档保留备份。"+(launch?"\n部署成功后，以不启用 EAC 的方式启动游戏。":""),"应用“"+manager.Current.Name+"”"))return;
+        List<CheckItem>? checks=null;List<PlanChange>? plan=null;
+        await Run("检查",()=>{checks=manager.Preflight();plan=manager.Plan();});
+        if(checks==null||plan==null)return;
+        if((plan.Count>0||checks.Count>0||!launch)&&new ReviewDialog(plan,checks,launch){Owner=this}.ShowDialog()!=true)return;
         bool done=false;
-        await Run("正在部署与校验…",()=>{manager.Apply();done=true;},"方案已应用。旧文件已保留，可在恢复页回退。");
+        await Run("正在部署与校验…",()=>{manager.Apply();done=true;},"已应用");
         if(done&&launch)
         {
             var start=new ProcessStartInfo(Path.Combine(manager.Settings.GamePath,"7DaysToDie.exe")){WorkingDirectory=manager.Settings.GamePath,UseShellExecute=true};
@@ -151,7 +189,7 @@ public partial class MainWindow : Window
     async void BackupClick(object sender,RoutedEventArgs e)
     {
         var path=Folder("选择要备份的存档文件夹",Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"7DaysToDie","Saves"));if(path==null)return;
-        var d=new SaveFileDialog{Filter="ZIP 备份|*.zip",FileName="7DTD-Saves-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".zip"};if(d.ShowDialog(this)==true)await Run("正在备份存档…",()=>manager.BackupSave(path,d.FileName),"存档备份完成。恢复存档需手动操作。");
+        var d=new SaveFileDialog{Filter="ZIP 备份|*.zip",FileName="7DTD-Saves-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".zip"};if(d.ShowDialog(this)==true)await Run("正在备份存档…",()=>manager.BackupSave(path,d.FileName),"已备份");
     }
     async Task Export(bool full)
     {
@@ -165,8 +203,8 @@ public partial class MainWindow : Window
     {
         manager.Current.TargetGameVersion=VersionNote.Text.Trim();manager.Current.Notes=ProfileNotes.Text.Trim();manager.Save();
     }
-    void SaveProfileClick(object sender,RoutedEventArgs e){SaveProfileFields();Status.Text="方案已保存，点击启动方案即可应用并启动。";}
-    void NoteChanged(object sender,TextChangedEventArgs e){if(!refreshing){SaveProfileFields();Status.Text="方案备注已自动保存。";}}
+    void SaveProfileClick(object sender,RoutedEventArgs e){SaveProfileFields();Status.Text="已保存";}
+    void NoteChanged(object sender,TextChangedEventArgs e){if(!refreshing){SaveProfileFields();Status.Text="已保存";}}
     async void ChooseDownloadsClick(object sender,RoutedEventArgs e)
     {
         var path=Folder("选择 Mod 网站下载内容所在的目录",manager.Settings.DownloadPath);if(path==null)return;
@@ -181,11 +219,11 @@ public partial class MainWindow : Window
     async void ImportDownloadClick(object sender,RoutedEventArgs e)
     {
         if(DownloadGrid.SelectedItem is not DownloadEntry entry){Status.Text="请先选择下载列表中的一项。";return;}
-        await Run("正在收录到仓库…",()=>manager.Import(entry.Path),"已收录到仓库；选择仓库中的版本可加入方案，尚未安装进游戏。");
+        await ImportPath(entry.Path);
     }
     void AddCatalogClick(object sender,RoutedEventArgs e)
     {
-        if(CatalogGrid.SelectedItem is Package p){manager.Select(p);Refresh();Status.Text="已加入当前方案，启用状态可在方案页调整。";}
+        if(CatalogGrid.SelectedItem is CatalogEntry entry){manager.Select(entry.Package);Refresh();Status.Text="已加入方案";}
     }
     async void CompareClick(object sender,RoutedEventArgs e)
     {

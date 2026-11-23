@@ -148,7 +148,7 @@ Test("手动选择 Mods 验证父目录并持久化",()=>{
     var(m,game,src)=Setup("choose-mods");m.Settings.GamePath="";m.SetModsDirectory(Path.Combine(game,"Mods"),m.Settings.UserModsPath);Check(Files.Same(m.Settings.GamePath,game));Check(Files.Same(new Manager(m.Root).GameMods,Path.Combine(game,"Mods")));Directory.CreateDirectory(Path.Combine(src,"Mods"));Reject(()=>m.SetModsDirectory(Path.Combine(src,"Mods"),m.Settings.UserModsPath));Reject(()=>m.SetModsDirectory(game,m.Settings.UserModsPath));
 });
 Test("下载目录同时发现压缩包与已解压模组且不改动源",()=>{
-    var(m,_,src)=Setup("downloads");var dir=Mod(Path.Combine(src,"wrapper"));File.WriteAllText(Path.Combine(src,"pack.zip"),"fixture");File.WriteAllText(Path.Combine(src,"pack.rar"),"fixture");var before=Files.Snapshot(src);var entries=m.ScanDownloads(src);Check(entries.Count==3);Check(entries.Any(e=>e.Kind=="ZIP")&&entries.Any(e=>e.Kind=="已解压目录")&&entries.Any(e=>e.Status.Contains("需先解压")));Check(Files.Equal(before,Files.Snapshot(src)));
+    var(m,_,src)=Setup("downloads");var dir=Mod(Path.Combine(src,"wrapper"));File.WriteAllText(Path.Combine(src,"pack.zip"),"fixture");File.WriteAllText(Path.Combine(src,"pack.rar"),"fixture");var before=Files.Snapshot(src);var entries=m.ScanDownloads(src);Check(entries.Count==3);Check(entries.Any(e=>e.Kind=="ZIP")&&entries.Any(e=>e.Kind=="已解压目录")&&entries.Any(e=>e.Kind=="RAR"&&e.Status=="待导入"));Check(Files.Equal(before,Files.Snapshot(src)));
 });
 Test("收录下载内容仅进仓库、不加入方案或部署",()=>{
     var(m,game,src)=Setup("library-only");var p=m.Import(Mod(src)).Single();Check(m.Packages().Count==1&&m.Current.Mods.Count==0&&m.Deployment.Mods.Count==0);Check(!Directory.Exists(Path.Combine(game,"Mods",p.Folder)));m.Select(p);Check(m.Current.Mods.Count==1&&!Directory.Exists(Path.Combine(game,"Mods",p.Folder)));
@@ -180,5 +180,65 @@ Test("无效规则被拒绝，损坏指纹库不会放行身份",()=>{
  File.WriteAllText(path,"[{}");Check(m.Identify(p).Status=="无法确认");
  File.WriteAllText(path,"[{}]");Reject(()=>Identity.Load(path));
 });
+
+Test("变更预览区分启用替换停用及无变更",()=>{
+ var(m,_,src)=Setup("plan");var dir=Mod(src);var a=m.Import(dir).Single();m.Select(a);Check(m.Plan().Single().Action=="启用");Check(m.RowState(m.Current.Mods[0])=="待启用");m.Apply();Check(m.Plan().Count==0);Check(m.RowState(m.Current.Mods[0])=="已部署");
+ File.WriteAllText(Path.Combine(dir,"content.txt"),"other");var b=m.Import(dir).Single();m.Select(b);Check(m.Plan().Single().Action=="替换");m.Current.Mods[0].Enabled=false;Check(m.Plan().Single().Action=="停用");Check(m.RowState(m.Current.Mods[0])=="待停用");
+});
+Test("版本范围与构建号不混淆",()=>{
+ Check(GameVersions.Matches("v3.3 b18","3.*"));Check(GameVersions.Matches("v3.3 b18","3.3.* b18"));Check(!GameVersions.Matches("3.3","3.3.* b18"));Check(!GameVersions.Matches("3.3","3.4.*"));Check(GameVersions.Parse("Steam Build 12345")==null);Check(GameVersions.Parse("2022.3.0")==null);
+});
+Test("体检区分阻止和待核实，不将手动来源当作已确认",()=>{
+ var(m,_,src)=Setup("preflight");var p=m.Import(Mod(src)).Single();m.Select(p);m.Current.TargetGameVersion="3.3 b18";
+ var rules=new List<SiteMod>{new(){Id="a",Name="A",Releases=[new(){ModVersion="1.0",Games=["3.2.*"]}],Required=["b"]},new(){Id="b",Name="B"}};
+ m.Settings.SourceBindings[p.Key]="a";var checks=m.Preflight(rules);Check(checks.Any(c=>c.Message.Contains("超出")));Check(checks.Any(c=>c.Message.Contains("缺少已启用")));Check(checks.Any(c=>c.Level=="待核实"));
+ m.GameRunning=()=>true;Check(m.Preflight(rules).Any(c=>c.Level=="阻止"));
+});
+Test("取消导入清理临时目录并保留原仓库",()=>{
+ var(m,_,src)=Setup("cancel");m.Import(Mod(Path.Combine(src,"existing")));var before=m.Packages().Select(p=>p.Key).ToArray();var incoming=Mod(Path.Combine(src,"incoming"),name:"Other");
+ File.WriteAllBytes(Path.Combine(incoming,"large.bin"),new byte[1024*1024]);using var cts=new CancellationTokenSource();
+ using(var scope=new WorkScope(cts.Token,new InlineProgress(p=>{if(p.Stage.StartsWith("复制"))cts.Cancel();})))Reject(()=>m.Import(incoming));
+ Check(m.Packages().Select(p=>p.Key).SequenceEqual(before));Check(!Directory.EnumerateDirectories(Path.Combine(m.Root,"Import")).Any());
+});
+Test("批量导入第二项失败不遗留第一项",()=>{
+ var(m,_,src)=Setup("batch-rollback");var first=Mod(src,"A","First");var second=Mod(src,"B","Second");File.WriteAllBytes(Path.Combine(second,"large.bin"),new byte[1024*1024]);using var cts=new CancellationTokenSource();
+ using(var scope=new WorkScope(cts.Token,new InlineProgress(p=>{if(m.Packages().Count>0)cts.Cancel();})))Reject(()=>m.Import(src));Check(m.Packages().Count==0);
+});
+Test("压缩目录拒绝越界重复链接和超大文件",()=>{
+ string dest=Path.Combine(root,"parse");
+ Reject(()=>Archives.Parse("Path = ../escape\nSize = 1\n",dest));Reject(()=>Archives.Parse("Path = a\nSize = 1\n\nPath = A\nSize = 1\n",dest));Reject(()=>Archives.Parse("Path = a\nSize = 1\nSymbolic Link = target\n",dest));Reject(()=>Archives.Parse("Path = a\nSize = 999999999999\n",dest));
+ Check(Archives.Parse("Path = folder/file.xml\nSize = 12\nAttributes = A\n",dest).Single().Size==12);
+});
+if(Archives.Find7Zip() is {} sevenZip)
+{
+ Test("7z 实际解压及重复导入去重",()=>{
+  var(m,_,src)=Setup("sevenzip");Mod(Path.Combine(src,"wrapper"));Directory.CreateDirectory(Path.Combine(src,"empty"));var archive=Path.Combine(root,"fixture.7z");
+  var info=new System.Diagnostics.ProcessStartInfo(sevenZip){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true};foreach(var a in new[]{"a",archive,src+"/*"})info.ArgumentList.Add(a);using var proc=System.Diagnostics.Process.Start(info)!;_=proc.StandardOutput.ReadToEnd();proc.WaitForExit();Check(proc.ExitCode==0);
+  var imported=m.Import(archive);Check(imported.Count==1);Check(m.Import(archive).Single().Key==imported.Single().Key);Check(m.Packages().Count==1);
+ });
+}
+
+Test("同名多版本可同时收录但方案只保留所选版本",()=>{
+ var(m,_,src)=Setup("multi-version");Mod(src,"v1","Same","1.0");Mod(src,"v2","Same","2.0");var packages=m.Import(src);Check(packages.Count==2);foreach(var p in packages)m.Select(p);Check(m.Current.Mods.Count==1);
+});
+var rarExe=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"WinRAR","Rar.exe");
+if(File.Exists(rarExe)&&Archives.Find7Zip()!=null)
+Test("RAR 实际解压",()=>{
+ var(m,_,src)=Setup("rar");Mod(src);var archive=Path.Combine(root,"fixture.rar");
+ var info=new System.Diagnostics.ProcessStartInfo(rarExe){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true};foreach(var a in new[]{"a","-r","-ep1",archive,src+"/*"})info.ArgumentList.Add(a);using var proc=System.Diagnostics.Process.Start(info)!;_=proc.StandardOutput.ReadToEnd();proc.WaitForExit();Check(proc.ExitCode==0);Check(m.Import(archive).Single().Name=="TestMod");
+});
+Test("版本文件差异区分新增移除修改",()=>{
+ var a=new Package{Files=new(){{"old.xml","a"},{"same.xml","a"},{"edit.xml","a"}}};var b=new Package{Files=new(){{"new.xml","a"},{"SAME.xml","a"},{"edit.xml","b"}}};var rows=Manager.ComparePackages(a,b);Check(rows.Count==3);Check(rows.Single(r=>r.Path=="edit.xml").Action=="修改");Check(rows.Single(r=>r.Path=="old.xml").Action=="移除");Check(rows.Single(r=>r.Path=="new.xml").Action=="新增");
+});
+if(Archives.Find7Zip() is {} cancel7zip)
+Test("取消实际 7z 解压返回取消状态且无残留",()=>{
+ var(m,_,src)=Setup("cancel-sevenzip");var dir=Mod(src);var data=new byte[2*1024*1024];new Random(7).NextBytes(data);File.WriteAllBytes(Path.Combine(dir,"large.bin"),data);var archive=Path.Combine(root,"cancel.7z");
+ var info=new System.Diagnostics.ProcessStartInfo(cancel7zip){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true};foreach(var a in new[]{"a",archive,src+"/*"})info.ArgumentList.Add(a);using(var proc=System.Diagnostics.Process.Start(info)!){_=proc.StandardOutput.ReadToEnd();proc.WaitForExit();Check(proc.ExitCode==0);}
+ using var cts=new CancellationTokenSource();bool cancelled=false;
+ using(var scope=new WorkScope(cts.Token,new InlineProgress(p=>{if(p.Stage.StartsWith("解压"))cts.Cancel();})))try{m.Import(archive);}catch(OperationCanceledException){cancelled=true;}
+ Check(cancelled);Check(m.Packages().Count==0);Check(!Directory.EnumerateDirectories(Path.Combine(m.Root,"Import")).Any());
+});
 Json.Write(Path.Combine(root,"results.json"),new{Passed=failed==0,Tests=results.Count,Failed=failed,Results=results});
 Console.WriteLine($"RESULT {results.Count-failed}/{results.Count} passed\n{root}");return failed==0?0:1;
+
+sealed class InlineProgress(Action<WorkProgress> callback) : IProgress<WorkProgress> { public void Report(WorkProgress value)=>callback(value); }

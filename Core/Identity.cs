@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace JLModManager.Core;
@@ -56,7 +56,7 @@ public static class Identity
 }
 public partial class Manager
 {
-    public IdentityResult Identify(Package p)
+    public IdentityResult Identify(Package p,bool verify=true)
     {
         try
         {
@@ -64,7 +64,7 @@ public partial class Manager
             // Local additions cannot silently override the bundled rules.
             rules.AddRange(Identity.Load(Path.Combine(Root,"identity-rules.json")));
             if(rules.Select(r=>r.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=rules.Count) return new("无法确认","内置与本地规则 ID 重复。");
-            var actual=Files.Describe(Payload(p.Key));
+            var actual=verify?Files.Describe(Payload(p.Key)):p;
             if(!Files.Equal(actual.Files,p.Files)) return new("无法确认","仓库文件已改变，请重新导入。");
             return Identity.Identify(actual,rules);
         }

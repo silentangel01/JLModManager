@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace JLModManager.Core;
 
@@ -38,6 +38,7 @@ public class Profile
 }
 public class Settings
 {
+    public Dictionary<string,string> SourceBindings { get; set; } = [];
     public string GamePath { get; set; } = "";
     public string UserModsPath { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "7DaysToDie", "Mods");
     public string ActiveProfile { get; set; } = "";

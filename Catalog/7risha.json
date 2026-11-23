@@ -1,0 +1,79 @@
+[
+  {
+    "Id": "83842",
+    "Name": "CustomAvatars · Xenoph 改版",
+    "Url": "https://www.7risha.com/83842.html",
+    "CheckedOn": "2026-11-23",
+    "Releases": [
+      {
+        "ModVersion": "alpha14",
+        "Games": [
+          "2.5.*",
+          "2.6.*",
+          "3.*"
+        ]
+      },
+      {
+        "ModVersion": "alpha15-unstable",
+        "Games": [
+          "2.5.*",
+          "2.6.*",
+          "3.*"
+        ]
+      }
+    ],
+    "Required": [],
+    "Note": "原版不能代替 Xenoph 改版；版本名称须与发布资料核对。"
+  },
+  {
+    "Id": "89203",
+    "Name": "CAF",
+    "Url": "https://www.7risha.com/89203.html",
+    "CheckedOn": "2026-11-23",
+    "Releases": [
+      {
+        "ModVersion": "2.4.0",
+        "Games": [
+          "3.4.*"
+        ]
+      },
+      {
+        "ModVersion": "2.3.1",
+        "Games": [
+          "3.1.*"
+        ]
+      }
+    ],
+    "Required": [],
+    "Note": ""
+  },
+  {
+    "Id": "103168",
+    "Name": "炮台大修：超越协议",
+    "Url": "https://www.7risha.com/103168.html",
+    "CheckedOn": "2026-11-23",
+    "Releases": [
+      {
+        "ModVersion": "1.1.6",
+        "Games": [
+          "3.2.*"
+        ]
+      }
+    ],
+    "Required": [
+      "89203"
+    ],
+    "Note": "公开页面未给 CAF 最低版本；请核对配套版本。"
+  },
+  {
+    "Id": "91333",
+    "Name": "Custom Avatars 女仆模型",
+    "Url": "https://www.7risha.com/91333.html",
+    "CheckedOn": "2026-11-23",
+    "Releases": [],
+    "Required": [
+      "83842"
+    ],
+    "Note": "作者标注 V2.X / V3.X；模型资源未提供可绑定的发布版本号。"
+  }
+]

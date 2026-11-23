@@ -139,7 +139,7 @@ public partial class Manager
             Files.Copy(dir,Path.Combine(temp,"content"));
             if(!Files.Equal(p.Files,Files.Snapshot(Path.Combine(temp,"content")))) throw new IOException("导入时源文件发生变化。");
             Json.Write(Path.Combine(temp,"package.json"),p);
-            Directory.Move(temp,Path.GetDirectoryName(dest)!);
+            WorkScope.Check();Directory.Move(temp,Path.GetDirectoryName(dest)!);
         }
         finally { Files.DeleteOwn(temp,Root); }
         Log("Imported "+p.Name+" "+p.Version+" "+p.Key); return p;
@@ -149,21 +149,27 @@ public partial class Manager
     {
         using var guard=Lock();
         LastImportedManifest=null;
+        var before=Packages().Select(p=>p.Key).ToHashSet();
         string? temp=null;
         try
         {
             if(File.Exists(path))
             {
-                if(!Path.GetExtension(path).Equals(".zip",StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("首版支持 ZIP 或已解压文件夹；RAR / 7z 请先解压。");
-                temp=Path.Combine(Root,"Import",Guid.NewGuid().ToString("N")); Directory.CreateDirectory(temp); Files.Extract(path,temp); path=temp;
+                var ext=Path.GetExtension(path).ToLowerInvariant();if(ext is not (".zip" or ".rar" or ".7z"))throw new InvalidDataException("不支持的压缩格式。");
+                temp=Path.Combine(Root,"Import",Guid.NewGuid().ToString("N")); Directory.CreateDirectory(temp); if(ext==".zip")Files.Extract(path,temp);else Archives.Extract(path,temp); path=temp;
             }
             var manifest=Path.Combine(path,"jlmm-pack.json");
             if(File.Exists(manifest)) { LastImportedManifest=Json.Read<PackManifest>(manifest); VerifyPack(path,LastImportedManifest); }
             var dirs=Files.FindMods(path);
             if(dirs.Count==0) throw new InvalidDataException("没有找到 ModInfo.xml。");
             var candidates=dirs.Select(d=>Files.Describe(d,false)).Where(p=>!Files.Native(p)).ToList();
-            if(candidates.GroupBy(p=>p.Name,StringComparer.OrdinalIgnoreCase).Any(g=>g.Count()>1)) throw new InvalidDataException("压缩包含同一 Mod 的多个版本，请分别导入。");
-            return dirs.Where(d=>!Files.Native(Files.Describe(d,false))).Select(ImportOne).ToList();
+            return dirs.Where(d=>!Files.Native(Files.Describe(d,false))).Select(ImportOne).DistinctBy(p=>p.Key).ToList();
+        }
+        catch
+        {
+            using var cleanup=new WorkScope(CancellationToken.None);
+            foreach(var p in Packages().Where(p=>!before.Contains(p.Key)))Files.DeleteOwn(Path.GetDirectoryName(Payload(p.Key))!,Library);
+            LastImportedManifest=null;throw;
         }
         finally { if(temp!=null) Files.DeleteOwn(temp,Root); }
     }

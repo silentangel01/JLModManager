@@ -1,4 +1,4 @@
-namespace JLModManager.Core;
+﻿namespace JLModManager.Core;
 
 public class DownloadEntry
 {
@@ -38,7 +38,7 @@ public partial class Manager
             foreach(var file in Directory.GetFiles(dir))
             {
                 string ext=System.IO.Path.GetExtension(file).ToLowerInvariant();
-                if(ext is ".zip" or ".rar" or ".7z")result.Add(new(){Path=file,Name=System.IO.Path.GetFileName(file),Kind=ext[1..].ToUpperInvariant(),Status=ext==".zip"?"待导入":"需先解压，再导入文件夹"});
+                if(ext is ".zip" or ".rar" or ".7z")result.Add(new(){Path=file,Name=System.IO.Path.GetFileName(file),Kind=ext[1..].ToUpperInvariant(),Status="待导入"});
             }
             if(depth<8)foreach(var sub in Directory.GetDirectories(dir))
             {
