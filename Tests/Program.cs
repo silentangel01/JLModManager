@@ -72,7 +72,7 @@ Test("仓库内容变动阻止部署",()=>{
     var(m,_,src)=Setup("librarydrift");var p=m.Import(Mod(src)).Single();m.Select(p);File.WriteAllText(Path.Combine(m.Payload(p.Key),"content.txt"),"drift");Reject(m.Apply);Check(m.Deployment.Mods.Count==0);
 });
 Test("已安装文件外部修改阻止覆盖，重新接管保留修改",()=>{
-    var(m,game,src)=Setup("drift");m.Select(m.Import(Mod(src)).Single());m.Apply();var f=Path.Combine(game,"Mods","TestMod","content.txt");File.WriteAllText(f,"user edit");Reject(m.Apply);Check(File.ReadAllText(f)=="user edit");m.Adopt(m.Scan().Where(i=>!i.Native));m.Apply();Check(File.ReadAllText(f)=="user edit");
+    var(m,game,src)=Setup("drift");m.Select(m.Import(Mod(src)).Single());m.Apply();var f=Path.Combine(game,"Mods","TestMod","content.txt");File.WriteAllText(f,"user edit");m.Current.Mods[0].Enabled=false;Reject(m.Apply);Check(File.ReadAllText(f)=="user edit");m.Adopt(m.Scan().Where(i=>!i.Native));m.Apply();Check(File.ReadAllText(f)=="user edit");
 });
 foreach(var point in new[]{"prepared","moved-old","moved-new","state-written"})
 Test("故障自动回滚 "+point,()=>{
@@ -237,6 +237,19 @@ Test("取消实际 7z 解压返回取消状态且无残留",()=>{
  using var cts=new CancellationTokenSource();bool cancelled=false;
  using(var scope=new WorkScope(cts.Token,new InlineProgress(p=>{if(p.Stage.StartsWith("解压"))cts.Cancel();})))try{m.Import(archive);}catch(OperationCanceledException){cancelled=true;}
  Check(cancelled);Check(m.Packages().Count==0);Check(!Directory.EnumerateDirectories(Path.Combine(m.Root,"Import")).Any());
+});
+
+Test("停用只处理变更模组，未变目录及运行时数据不动",()=>{
+ var(m,game,src)=Setup("incremental");var a=m.Import(Mod(src,"A","A")).Single();var b=m.Import(Mod(src,"B","B")).Single();m.Select(a);m.Select(b);m.Apply();
+ var keep=Path.Combine(game,"Mods","A","content.txt");File.WriteAllText(keep,"runtime edit");using(var held=new FileStream(keep,FileMode.Open,FileAccess.Read,FileShare.Read)){
+ m.Current.Mods.Single(c=>c.Key==b.Key).Enabled=false;m.Apply();Check(m.Deployment.Mods.Count==1);Check(m.History().First().Changes.Count==1);Check(m.RowState(m.Current.Mods.Single(c=>c.Key==b.Key))=="已停用");}
+ Check(File.ReadAllText(keep)=="runtime edit");m.Undo();Check(Directory.Exists(Path.Combine(game,"Mods","B")));Check(File.ReadAllText(keep)=="runtime edit");
+});
+Test("无变更应用不创建事务也不读取内容",()=>{
+ var(m,game,src)=Setup("noop");m.Select(m.Import(Mod(src)).Single());m.Apply();var count=m.History().Count;using var held=new FileStream(Path.Combine(game,"Mods","TestMod","content.txt"),FileMode.Open,FileAccess.Read,FileShare.None);m.Apply();Check(m.History().Count==count);
+});
+Test("预检不扫描大文件，应用仍拒绝损坏仓库",()=>{
+ var(m,_,src)=Setup("quick-review");var p=m.Import(Mod(src)).Single();m.Select(p);File.WriteAllText(Path.Combine(m.Payload(p.Key),"content.txt"),"bad");_=m.Review(false);Reject(m.Apply);Check(m.Deployment.Mods.Count==0);
 });
 Json.Write(Path.Combine(root,"results.json"),new{Passed=failed==0,Tests=results.Count,Failed=failed,Results=results});
 Console.WriteLine($"RESULT {results.Count-failed}/{results.Count} passed\n{root}");return failed==0?0:1;

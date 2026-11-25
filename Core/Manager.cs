@@ -215,14 +215,14 @@ public partial class Manager
     public bool HasPending => History().Any(t=>t.Status=="Prepared");
     void EnsureNoPending() { if(HasPending) throw new IOException("存在未完成部署，请先点击恢复。"); }
     string Journal(Transaction t) => Path.Combine(Transactions,t.Id+".json");
-    public List<string> Review()
+    public List<string> Review(bool verifyFiles=true)
     {
         ValidateGame(); EnsureNoPending();
         var old=Deployment; var messages=new List<string>();
         foreach(var m in old.Mods)
         {
             ValidateTarget(m.Target);
-            if(!Directory.Exists(m.Target) || !Files.Equal(m.Files,Files.Snapshot(m.Target))) throw new IOException("已安装文件被外部修改或移走："+m.Name+"。请扫描并重新接管现有版本，或恢复原文件；本次不会覆盖。");
+            if(!Directory.Exists(m.Target) || (verifyFiles && !Files.Equal(m.Files,Files.Snapshot(m.Target)))) throw new IOException("已安装文件被外部修改或移走："+m.Name+"。请扫描并重新接管现有版本，或恢复原文件；本次不会覆盖。");
         }
         var selected=Current.Mods.Where(c=>c.Enabled).Select(c=>(Choice:c,Info:Package(c.Key))).ToList();
         if(selected.GroupBy(c=>c.Info.Name,StringComparer.OrdinalIgnoreCase).Any(g=>g.Count()>1) || selected.GroupBy(c=>c.Info.Folder,StringComparer.OrdinalIgnoreCase).Any(g=>g.Count()>1)) throw new IOException("方案含重复 Mod 名称或目标文件夹。");
@@ -230,11 +230,11 @@ public partial class Manager
         foreach(var item in selected)
         {
             if(Files.Native(item.Info)) throw new IOException("方案不能包含游戏自带 Harmony。");
-            if(!Files.Equal(item.Info.Files,Files.Snapshot(Payload(item.Info.Key)))) throw new IOException("原始仓库校验失败："+item.Info.Name);
+            if(verifyFiles && !Files.Equal(item.Info.Files,Files.Snapshot(Payload(item.Info.Key)))) throw new IOException("原始仓库校验失败："+item.Info.Name);
             if(external.Any(i=>i.Info?.Name.Equals(item.Info.Name,StringComparison.OrdinalIgnoreCase)==true)) throw new IOException("外部目录已有同名 Mod，请先接管："+item.Info.Name);
             string target=Path.Combine(GameMods,item.Info.Folder); ValidateTarget(target);
             if((Directory.Exists(target)||File.Exists(target)) && !old.Mods.Any(m=>Files.Same(m.Target,target))) throw new IOException("目标文件夹不是管理器管理的内容："+target);
-            messages.Add("启用  "+item.Info.DisplayName+"  "+item.Info.Version+"\n  "+Identify(item.Info));
+            messages.Add("启用  "+item.Info.DisplayName+"  "+item.Info.Version+"\n  "+Identify(item.Info,false));
         }
         foreach(var m in old.Mods.Where(m=>!selected.Any(c=>c.Info.Name.Equals(m.Name,StringComparison.OrdinalIgnoreCase)))) messages.Add("停用  "+m.Name);
         if(selected.Any(c=>c.Info.HasCode) && !Scan().Any(i=>i.Native)) throw new IOException("代码 Mod 需要游戏自带的 0_TFP_Harmony，请先验证游戏文件。");
@@ -243,11 +243,15 @@ public partial class Manager
     }
     public void Apply()
     {
-        using var guard=Lock(); EnsureStopped(); Review();
+        using var guard=Lock(); EnsureStopped(); Review(false);
         var t=new Transaction {Before=Deployment,After=new Deployment {ProfileName=Current.Name}};
         Directory.CreateDirectory(GameMods);
         var chosen=Current.Mods.Where(c=>c.Enabled).ToList();
         var allTargets=t.Before.Mods.Select(m=>m.Target).Concat(chosen.Select(c=>Path.Combine(GameMods,Package(c.Key).Folder))).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var unchanged=t.Before.Mods.Where(m=>chosen.Any(c=>c.Key==m.Key && Files.Same(m.Target,Path.Combine(GameMods,Package(c.Key).Folder)))).ToList();
+        t.After.Mods.AddRange(unchanged);
+        allTargets=allTargets.Where(target=>!unchanged.Any(m=>Files.Same(target,m.Target))).ToList();
+        if(allTargets.Count==0)return;
         int index=0;
         // The journal exists before any staging, so even preparation failures are recoverable.
         Json.Write(Journal(t),t);
@@ -259,13 +263,19 @@ public partial class Manager
                 string area=Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(target))!,".JLMM-Transactions",t.Id);
                 Files.NoLinks(area);
                 var change=new Change {Target=Files.Full(target),Stage=Path.Combine(area,"new",index.ToString()),Backup=Path.Combine(area,"old",index.ToString()),Existed=Directory.Exists(target)};
-                if(change.Existed) change.Before=Files.Snapshot(target);
+                if(change.Existed)
+                {
+                    change.Before=Files.Snapshot(target);
+                    var baseline=t.Before.Mods.Single(m=>Files.Same(m.Target,target));
+                    if(!Files.Equal(change.Before,baseline.Files))throw new IOException("已安装文件被修改，请重新接管："+baseline.Name);
+                }
                 t.Changes.Add(change); Json.Write(Journal(t),t);
                 var choice=chosen.FirstOrDefault(c=>Files.Same(Path.Combine(GameMods,Package(c.Key).Folder),target));
                 if(choice!=null)
                 {
                     var p=Package(choice.Key); Files.Copy(Payload(choice.Key),change.Stage);
                     change.After=Files.Snapshot(change.Stage);
+                    if(!Files.Equal(change.After,p.Files))throw new IOException("仓库内容已改变："+p.Name);
                     t.After.Mods.Add(new ManagedMod {Name=p.Name,Key=p.Key,Target=change.Target,Files=change.After});
                 }
                 Json.Write(Journal(t),t); index++;
@@ -277,20 +287,30 @@ public partial class Manager
                 if(c.Existed)
                 {
                     if(!Files.Equal(c.Before,Files.Snapshot(c.Target))) throw new IOException("部署前文件发生变化。");
-                    Directory.CreateDirectory(Path.GetDirectoryName(c.Backup)!); Directory.Move(c.Target,c.Backup);
+                    Directory.CreateDirectory(Path.GetDirectoryName(c.Backup)!); MoveDeploymentDirectory(c.Target,c.Backup);
                 }
                 Checkpoint?.Invoke("moved-old");
-                if(Directory.Exists(c.Stage)) Directory.Move(c.Stage,c.Target);
+                if(Directory.Exists(c.Stage)) MoveDeploymentDirectory(c.Stage,c.Target);
                 Checkpoint?.Invoke("moved-new");
                 if(c.After.Count>0 && !Files.Equal(c.After,Files.Snapshot(c.Target))) throw new IOException("部署校验失败。");
             }
             Json.Write(StatePath,t.After); Checkpoint?.Invoke("state-written");
             t.Status="Completed"; Json.Write(Journal(t),t); Log("Applied profile "+Current.Name+" transaction "+t.Id);
         }
-        catch
+        catch(Exception error)
         {
             if(!GameRunning()) { try { Restore(t); } catch(Exception e) { Log("Recovery required: "+e.Message); } }
-            throw;
+            throw new IOException((t.Status=="Restored"?"应用失败，已恢复。":"应用失败，请先恢复部署。")+"\n"+error.Message,error);
+        }
+    }
+    static void MoveDeploymentDirectory(string source,string target)
+    {
+        try {Directory.Move(source,target);}
+        catch(Exception e) when(e is IOException or UnauthorizedAccessException)
+        {
+            int code=e.HResult&0xffff;
+            string advice=code is 32 or 33?"文件被占用，请关闭使用该目录的程序后重试。":code==5?"访问被拒绝。请先排查占用，再检查当前用户的修改权限；不要直接关闭安全软件或授予所有人权限。":"请检查目录及磁盘状态。";
+            throw new IOException($"无法移动：{source}\n目标：{target}\n系统错误 {code}：{advice}",e);
         }
     }
     void ValidateChange(Transaction t, Change c)

@@ -76,7 +76,7 @@ public partial class MainWindow : Window
         var progress=new Progress<WorkProgress>(p=>{BusyText.Text=p.Stage;WorkBar.IsIndeterminate=p.Total<=0;if(p.Total>0)WorkBar.Value=100.0*p.Done/p.Total;WorkPercent.Text=p.Total>0?$"{100.0*p.Done/p.Total:0}%":"";});
         try { await Task.Run(()=>{using var scope=new WorkScope(cancellable?operationCancel.Token:CancellationToken.None,progress);action();});Refresh();Status.Text=success; }
         catch(OperationCanceledException){Refresh();Status.Text="已取消";}
-        catch(Exception ex){manager.Log(ex.ToString());Status.Text="操作失败";if(manager.HasPending){Tabs.SelectedIndex=3;Status.Text="部署待恢复";}MessageBox.Show(this,ex.Message,"操作失败",MessageBoxButton.OK,MessageBoxImage.Warning);}
+        catch(Exception ex){manager.Log(ex.ToString());Status.Text=ex.Message.StartsWith("应用失败，已恢复")?"应用失败，已恢复":"操作失败";if(manager.HasPending){Tabs.SelectedIndex=3;Status.Text="部署待恢复";}MessageBox.Show(this,ex.Message,"操作失败",MessageBoxButton.OK,MessageBoxImage.Warning);}
         finally {Busy.Visibility=Visibility.Collapsed;working=false;operationCancel.Dispose();operationCancel=null;}
     }
     void CancelClick(object sender,RoutedEventArgs e){operationCancel?.Cancel();CancelWork.IsEnabled=false;BusyText.Text="正在取消";}

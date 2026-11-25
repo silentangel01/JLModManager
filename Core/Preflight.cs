@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace JLModManager.Core;
@@ -51,7 +51,7 @@ public partial class Manager
     public List<CheckItem> Preflight(List<SiteMod>? catalog=null)
     {
         var result=new List<CheckItem>();
-        try{EnsureStopped();_=Review();}catch(Exception ex) when(ex is IOException or InvalidOperationException or System.Text.Json.JsonException){result.Add(new("阻止","部署",ex.Message));}
+        try{EnsureStopped();_=Review(false);}catch(Exception ex) when(ex is IOException or InvalidOperationException or System.Text.Json.JsonException){result.Add(new("阻止","部署",ex.Message));}
         catalog??=SiteCatalog();var actual=ActualGameVersion();var target=GameVersions.Parse(Current.TargetGameVersion);
         if(actual==null)result.Add(new("提醒","游戏版本",target==null?"无法读取实际版本；请填写目标版本。":"实际版本未知；本次按目标版本 "+target+" 检查。"));
         else if(target!=null&&actual!=target)result.Add(new("提醒","游戏版本",$"实际 {actual}，目标 {target}。"));

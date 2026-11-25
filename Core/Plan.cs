@@ -1,4 +1,4 @@
-namespace JLModManager.Core;
+﻿namespace JLModManager.Core;
 
 public record PlanChange(string Action, string Name, string Before, string After);
 public record FileChange(string Action,string Path);
@@ -31,6 +31,6 @@ public partial class Manager
     public string RowState(Choice choice)
     {
         var p=Package(choice.Key);var old=Deployment.Mods.FirstOrDefault(m=>m.Name.Equals(p.Name,StringComparison.OrdinalIgnoreCase));
-        return !choice.Enabled ? old==null?"未启用":"待停用" : old==null?"待启用" : old.Key==p.Key&&Files.Same(old.Target,Path.Combine(GameMods,p.Folder))?"已部署":"待替换";
+        return !choice.Enabled ? old==null?"已停用":"待停用" : old==null?"待启用" : old.Key==p.Key&&Files.Same(old.Target,Path.Combine(GameMods,p.Folder))?"已部署":"待替换";
     }
 }
