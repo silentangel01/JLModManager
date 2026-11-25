@@ -171,7 +171,16 @@ public partial class MainWindow : Window
         List<CheckItem>? checks=null;List<PlanChange>? plan=null;
         await Run("检查",()=>{checks=manager.Preflight();plan=manager.Plan();});
         if(checks==null||plan==null)return;
-        if((plan.Count>0||checks.Count>0||!launch)&&new ReviewDialog(plan,checks,launch){Owner=this}.ShowDialog()!=true)return;
+        if(plan.Count>0||checks.Count>0||!launch)
+        {
+            while(true)
+            {
+                var review=new ReviewDialog(plan,checks,launch){Owner=this};
+                if(review.ShowDialog()==true)break;
+                if(!review.BackupRequested)return;
+                await BackupSave();
+            }
+        }
         bool done=false;
         await Run("正在部署与校验…",()=>{manager.Apply();done=true;},"已应用");
         if(done&&launch)
@@ -186,7 +195,8 @@ public partial class MainWindow : Window
     async void RecoverClick(object sender,RoutedEventArgs e)=>await Run("正在恢复未完成部署…",manager.Recover);
     async void UndoClick(object sender,RoutedEventArgs e){if(Confirm("恢复上一次部署前的 Mod 文件？存档进度不变，方案编辑内容也会保留。"))await Run("正在回退…",manager.Undo,"已恢复部署前的 Mod 文件。");}
     void OpenDataClick(object sender,RoutedEventArgs e)=>Open(manager.Root);
-    async void BackupClick(object sender,RoutedEventArgs e)
+    async void BackupClick(object sender,RoutedEventArgs e)=>await BackupSave();
+    async Task BackupSave()
     {
         var path=Folder("选择要备份的存档文件夹",Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"7DaysToDie","Saves"));if(path==null)return;
         var d=new SaveFileDialog{Filter="ZIP 备份|*.zip",FileName="7DTD-Saves-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".zip"};if(d.ShowDialog(this)==true)await Run("正在备份存档…",()=>manager.BackupSave(path,d.FileName),"已备份");

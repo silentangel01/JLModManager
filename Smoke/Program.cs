@@ -62,7 +62,8 @@ class Program
             Assert(((TextBlock)w.FindName("DeployLabel")).Text.Contains("待应用 2 项"),"部署状态显示实际变更数");
             Assert(buttons.Contains("变更")&&buttons.Contains("检查"),"变更与检查入口");
             Assert(!Descendants(w).OfType<TextBlock>().Any(t=>t.IsVisible&&t.Text.Contains("接管后可")),"主界面无常驻解释");
-            var review=new ReviewDialog(m.Plan(),m.Preflight(),true){Owner=w};review.Show();Flush();Render(review,"06-review");Assert(Descendants(review).OfType<Button>().Any(b=>Equals(b.Content,"应用并启动")),"启动检查合并确认");review.Close();
+            var review=new ReviewDialog(m.Plan(),m.Preflight(),true){Owner=w};review.Show();Flush();Render(review,"06-review");Assert(Descendants(review).OfType<Button>().Any(b=>Equals(b.Content,"应用并启动")),"启动检查合并确认");Assert(Descendants(review).OfType<Button>().Any(b=>Equals(b.Content,"备份存档")),"变更确认提供存档备份入口");review.Close();
+            var noChange=new ReviewDialog([],[],false){Owner=w};noChange.Show();Flush();Assert(!Descendants(noChange).OfType<Button>().Any(b=>Equals(b.Content,"备份存档")),"无变更不重复提示备份");noChange.Close();
             var import=new ImportResultDialog(m.Packages(),[],m.Settings.Profiles,m.Current){Owner=w};import.Show();Flush();Render(import,"07-import");Assert(import.Selected.Count==2&&import.Target==m.Current,"导入选择方案与多个模组");import.Close();
             var sources=new SourceDialog(m.SiteCatalog(),null){Owner=w};sources.Show();Flush();Render(sources,"08-source");Assert(sources.SelectedId==null,"来源不自动关联");sources.Close();
             w.Close();Json.Write(Path.Combine(root,"smoke-results.json"),new{Passed=true,Checks=count,GameLaunched=false,RealModsModified=false});app.Shutdown();return 0;
